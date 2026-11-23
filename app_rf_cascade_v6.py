@@ -15,6 +15,10 @@ import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import io
+import qrcode
+from PIL import Image
+import streamlit as st
 
 st.set_page_config(
     page_title="Simulador FER v4.2 - Jaime",
@@ -24,6 +28,18 @@ st.set_page_config(
 
 K_BOLTZMANN = 1.380649e-23  # J/K
 
+def generate_qr_code(url: str):
+    """Genera una imagen PIL con el código QR de la URL indicada."""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=2,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="#1A365D", back_color="#FFFFFF")
+    return img
 
 def db_to_lin(val_db):
     return 10.0 ** (val_db / 10.0)
@@ -245,6 +261,13 @@ def render_block_diagram_v4(stages, is_saturated, f_calc_ghz, temp_kelvin):
 def main():
     st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) V6.0")
     st.caption("Autor: *Jaime Huenuqueo Salazar* | *Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM*")
+
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📱 Acceso Móvil / Compartir")
+    app_url = "[https://apprfcascade-e2yarkcbf6pohnlcedr5mx.streamlit.app/"
+    qr_img = generate_qr_code(app_url)
+    st.sidebar.image(qr_img, caption="Escanea para abrir el simulador", use_container_width=True)
+    st.sidebar.markdown(f"[🔗 Abrir en el navegador]({app_url})")
 
     st.sidebar.header("🌐 Cobertura Espectral")
     col_f1, col_f2 = st.sidebar.columns(2)
