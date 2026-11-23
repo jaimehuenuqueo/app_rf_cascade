@@ -11,7 +11,6 @@ Nuevas características:
 - Desempaquetado correcto de columnas en Streamlit para evitar AttributeError.
 """
 
-import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -40,6 +39,26 @@ def generate_qr_code(url: str):
     qr.make(fit=True)
     img = qr.make_image(fill_color="#1A365D", back_color="#FFFFFF")
     return img
+
+def generate_qr_code_bytes(url: str):
+    """Genera un búfer de bytes PNG listo para Streamlit."""
+    qr = qrcode.QRCode(
+        version=1,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(url)
+    qr.make(fit=True)
+
+    # Generar la imagen y convertirla explícitamente a RGB
+    img = qr.make_image(fill_color="#1A365D", back_color="#FFFFFF").convert("RGB")
+
+    # Guardar en un búfer en memoria en formato PNG
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return buf
 
 def db_to_lin(val_db):
     return 10.0 ** (val_db / 10.0)
@@ -265,8 +284,8 @@ def main():
     st.sidebar.markdown("---")
     st.sidebar.subheader("📱 Acceso Móvil / Compartir")
     app_url = "[https://apprfcascade-e2yarkcbf6pohnlcedr5mx.streamlit.app/"
-    qr_img = generate_qr_code(app_url)
-    st.sidebar.image(qr_img, caption="Escanea para abrir el simulador", use_container_width=True)
+    qr_buf = generate_qr_code_bytes(app_url)
+    st.sidebar.image(qr_buf, caption="Escanea para abrir el simulador", use_container_width=True)
     st.sidebar.markdown(f"[🔗 Abrir en el navegador]({app_url})")
 
     st.sidebar.header("🌐 Cobertura Espectral")
