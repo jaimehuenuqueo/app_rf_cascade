@@ -1,14 +1,13 @@
-""""
-Simulador Interactivo de Cascada de RF para Front-End Receiver (FER) - Versión 4.4
+"""
+Simulador Interactivo de Cascada de RF para Front-End Receiver (FER) - Versión 6.5
 Autor: Jaime Huenuqueo Salazar| Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM
 
-Mejoras v6.4:
-1. Coerción estricta de signos: Componentes pasivas solo admiten G <= 0 dB (auto-corrección a negativo si G > 0 con advertencia).
-2. Campo NF bloqueado (disabled=True) y autocalculado como |G| para componentes pasivas.
-3. Componentes activas (LNA, Downconverter, UpConverter) mantienen G y NF plenamente editables.
-4. Aplicación de esta regla en la barra lateral y en la tabla interactiva de reordenamiento con UUID persistente.
-5. Catálogo completo: Power Divider 1:2, 1:4, SP3T, SP4T, Atenuadores, Downconverter/UpConverter, Diplexores y Triplexores.
-6. Código QR funcional con la URL oficial de Streamlit Cloud.
+Mejoras v4.5:
+1. Auto-actualización reactiva de NF = |G| en componentes pasivas en la tabla de reordenamiento.
+2. Incorporación de los campos IIP2 (dBm), IIP3 (dBm) e IP1dB (dBm = OP1dB - G) en la interfaz.
+3. Despliegue de la curva de IP1dB (saturación de entrada) en la gráfica de Psig.
+4. Valores por defecto de OIP2 y OIP3 fijados en 249.0 dBm para componentes ideales/pasivas.
+5. Campo Part Number (PN) por componente para trazabilidad de modelos reales y exportación en CSV.
 """
 
 import io
@@ -20,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(
-    page_title="Simulador FER v4.4 - Jaime",
+    page_title="Simulador FER v4.5 - Jaime",
     page_icon="📡",
     layout="wide"
 )
@@ -32,28 +31,35 @@ PASSIVE_KEYWORDS = [
     "switch", "spdt", "sp3t", "sp4t", "diplexer", "triplexer", "protección pin", "limitador"
 ]
 
+
 def is_passive_component(comp_type: str, comp_name: str = "") -> bool:
     """Identifica si una componente es física y termodinámicamente pasiva."""
     target = f"{comp_type} {comp_name}".lower()
     return any(k in target for k in PASSIVE_KEYWORDS)
 
+
 def db_to_lin(val_db):
     return 10.0 ** (val_db / 10.0)
+
 
 def lin_to_db(val_lin):
     return 10.0 * np.log10(np.maximum(val_lin, 1e-20))
 
+
 def dbm_to_mw(val_dbm):
     return 10.0 ** (val_dbm / 10.0)
 
+
 def mw_to_dbm(val_mw):
     return 10.0 * np.log10(np.maximum(val_mw, 1e-20))
+
 
 def compute_noise_power_density_dbm_mhz(temp_kelvin):
     p_noise_w_per_hz = K_BOLTZMANN * temp_kelvin
     p_noise_mw_per_hz = p_noise_w_per_hz * 1e3
     p_noise_dbm_per_hz = 10.0 * np.log10(np.maximum(p_noise_mw_per_hz, 1e-30))
     return p_noise_dbm_per_hz + 60.0
+
 
 def generate_qr_code_bytes(url: str):
     qr = qrcode.QRCode(
@@ -69,6 +75,7 @@ def generate_qr_code_bytes(url: str):
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
 
 def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, temp_kelvin, f_calc_ghz):
     if not stages:
@@ -105,7 +112,7 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
     for i, stg in enumerate(stages):
         g_i_db = float(stg["gain_db"])
 
-        # En componentes pasivas la ganancia es <= 0 y la NF es igual a la pérdida
+        # Coerción de componentes pasivas
         if is_passive_component(stg.get("type", ""), stg.get("name", "")):
             if g_i_db > 0:
                 g_i_db = -abs(g_i_db)
@@ -116,11 +123,11 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
             nf_i_db = float(stg["nf_db"])
 
         op1_i_dbm = float(stg.get("op1db_dbm", 30.0))
-        oip3_i_dbm = float(stg.get("oip3_dbm", op1_i_dbm + 12.0))
-        oip2_i_dbm = float(stg.get("oip2_dbm", oip3_i_dbm + 20.0))
+        oip3_i_dbm = float(stg.get("oip3_dbm", 249.0))
+        oip2_i_dbm = float(stg.get("oip2_dbm", 249.0))
         opmax_stage = float(stg.get("opmax_dbm", 249.0))
 
-        # Cálculo automático de los equivalentes referidos a la entrada
+        # Cálculo de parámetros referidos a la entrada
         ip1db_i_dbm = op1_i_dbm - g_i_db
         iip3_i_dbm = oip3_i_dbm - g_i_db
         iip2_i_dbm = oip2_i_dbm - g_i_db
@@ -186,19 +193,20 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
     idr_db = total_ip1db - mds_rf_dbm
 
     df_results = pd.DataFrame({
-        "Etapa": [f"{i+1}. {s['name']}" for i, s in enumerate(stages)],
+        "Etapa": [f"{i + 1}. {s['name']}" for i, s in enumerate(stages)],
+        "PN": [s.get("pn", "N/A") for s in stages],
         "Tipo": [s["type"] for s in stages],
         "Frecuencia (GHz)": [f_calc_ghz] * n,
         "Temp (K)": [temp_kelvin] * n,
         "G [dB]": [s["gain_db"] for s in stages],
         "NF Etapa [dB]": [s["nf_db"] for s in stages],
         "OP1 [dBm]": [s.get("op1db_dbm", 30.0) for s in stages],
-        "OIP3 [dBm]": [s.get("oip3_dbm", 42.0) for s in stages],
-        "OIP2 [dBm]": [s.get("oip2_dbm", 62.0) for s in stages],
+        "OIP3 [dBm]": [s.get("oip3_dbm", 249.0) for s in stages],
+        "OIP2 [dBm]": [s.get("oip2_dbm", 249.0) for s in stages],
         "OPmax [dBm]": [s.get("opmax_dbm", 249.0) for s in stages],
-        "Calc IP1 [dBm]": np.round(calc_ip1_list, 2),
-        "Calc IIP3 [dBm]": np.round(calc_iip3_list, 2),
-        "Calc IIP2 [dBm]": np.round(calc_iip2_list, 2),
+        "IP1dB Entrada [dBm]": np.round(calc_ip1_list, 2),
+        "IIP3 Entrada [dBm]": np.round(calc_iip3_list, 2),
+        "IIP2 Entrada [dBm]": np.round(calc_iip2_list, 2),
         "Gain Acum [dB]": np.round(cum_gain_db, 2),
         "NF Acum Friis [dB]": np.round(cum_nf_db, 2),
         "OP1 Acum [dBm]": np.round(cum_op1db_dbm, 2),
@@ -235,10 +243,12 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
         "noise_floor_dbm": noise_floor_dbm,
         "snr_stage_db": snr_stage_db,
         "pmax_limited_dbm": pmax_limited_dbm,
+        "calc_ip1_list": calc_ip1_list,
         "is_saturated": is_saturated,
     }
 
     return df_results, summary
+
 
 def render_block_diagram_v4(stages, is_saturated, f_calc_ghz, temp_kelvin):
     if not stages:
@@ -253,14 +263,19 @@ def render_block_diagram_v4(stages, is_saturated, f_calc_ghz, temp_kelvin):
         bcolor = "#FEB2B2" if sat else "#9AE6B4"
 
         stype = s["type"]
-        icon = "📡" if "antena" in stype.lower() else ("🔄" if "converter" in stype.lower() else ("🔀" if "plexer" in stype.lower() or "divider" in stype.lower() or "divisor" in stype.lower() else ("〰️" if "cable" in stype.lower() else "📦")))
+        pn_val = s.get("pn", "")
+        pn_str = f"<div style='font-size:10px; color:#F6AD55; font-weight:bold;'>PN: {pn_val}</div>" if pn_val else ""
+        icon = "📡" if "antena" in stype.lower() else ("🔄" if "converter" in stype.lower() else (
+            "🔀" if "plexer" in stype.lower() or "divider" in stype.lower() or "divisor" in stype.lower() else (
+                "〰️" if "cable" in stype.lower() else "📦")))
 
         card_html = (
             f'<div style="display:inline-block; vertical-align:top; background:{bg}; '
             f'border:2px solid {border}; border-radius:8px; padding:10px 12px; min-width:145px; '
             f'text-align:center; box-shadow:0 4px 6px rgba(0,0,0,0.3); margin:0 4px;">'
-            f'<div style="font-size:10px; color:#A0AEC0; font-weight:bold; text-transform:uppercase;">ETAPA {i+1}</div>'
+            f'<div style="font-size:10px; color:#A0AEC0; font-weight:bold; text-transform:uppercase;">ETAPA {i + 1}</div>'
             f'<div style="font-size:13px; color:#FFFFFF; font-weight:bold; margin:3px 0;">{icon} {s["name"]}</div>'
+            f'{pn_str}'
             f'<div style="font-size:10px; color:#CBD5E0; background:rgba(0,0,0,0.25); padding:2px 4px; border-radius:4px; margin-bottom:4px;">{s["type"]}</div>'
             f'<div style="font-size:11px; color:#90CDF4; font-family:monospace;">G:{s["gain_db"]:+.1f}dB | NF:{s["nf_db"]:.1f}dB</div>'
             f'<div style="font-size:10px; font-weight:bold; color:{bcolor}; margin-top:4px;">{badge}</div>'
@@ -271,22 +286,23 @@ def render_block_diagram_v4(stages, is_saturated, f_calc_ghz, temp_kelvin):
     arrow_html = '<div style="display:inline-block; vertical-align:middle; color:#63B3ED; font-weight:bold; font-size:16px; margin:0 2px;">▶</div>'
 
     diagram_html = (
-        '<div style="display:block; overflow-x:auto; white-space:nowrap; padding:15px; '
-        'background:#1A202C; border-radius:10px; border:1px solid #2D3748; margin-bottom:20px;">'
-        + arrow_html.join(cards) +
-        arrow_html +
-        '<div style="display:inline-block; vertical-align:top; background:#2D3748; border:1px solid #4A5568; '
-        'border-radius:8px; padding:10px 14px; min-width:110px; text-align:center;">'
-        '<div style="font-size:10px; color:#A0AEC0; font-weight:bold;">DESTINO</div>'
-        '<div style="font-size:13px; color:#FFFFFF; font-weight:bold; margin-top:3px;">🎯 Salida FER</div>'
-        f'<div style="font-size:10px; color:#90CDF4;">@{f_calc_ghz:.2f}GHz, {temp_kelvin:.1f}K</div>'
-        '</div>'
-        '</div>'
+            '<div style="display:block; overflow-x:auto; white-space:nowrap; padding:15px; '
+            'background:#1A202C; border-radius:10px; border:1px solid #2D3748; margin-bottom:20px;">'
+            + arrow_html.join(cards) +
+            arrow_html +
+            '<div style="display:inline-block; vertical-align:top; background:#2D3748; border:1px solid #4A5568; '
+            'border-radius:8px; padding:10px 14px; min-width:110px; text-align:center;">'
+            '<div style="font-size:10px; color:#A0AEC0; font-weight:bold;">DESTINO</div>'
+            '<div style="font-size:13px; color:#FFFFFF; font-weight:bold; margin-top:3px;">🎯 Salida FER</div>'
+            f'<div style="font-size:10px; color:#90CDF4;">@{f_calc_ghz:.2f}GHz, {temp_kelvin:.1f}K</div>'
+            '</div>'
+            '</div>'
     )
     st.markdown(diagram_html, unsafe_allow_html=True)
 
+
 def main():
-    st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) V6.4")
+    st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) V6.5")
     st.caption("Autor: **Jaime Huenuqueo Salazar** | *Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM*")
 
     st.sidebar.header("🌐 Cobertura Espectral")
@@ -309,7 +325,8 @@ def main():
 
     col_op1, col_op2 = st.sidebar.columns(2)
     with col_op1:
-        f_calc_ghz = st.number_input("Frecuencia f_calc (GHz)", min_value=float(f_min_ghz), max_value=float(f_max_ghz), value=float(min(max(10.0, f_min_ghz), f_max_ghz)), step=0.5, format="%.2f")
+        f_calc_ghz = st.number_input("Frecuencia f_calc (GHz)", min_value=float(f_min_ghz), max_value=float(f_max_ghz),
+                                     value=float(min(max(10.0, f_min_ghz), f_max_ghz)), step=0.5, format="%.2f")
     with col_op2:
         st.metric("Frecuencia (MHz)", f"{f_calc_ghz * 1000.0:,.0f} MHz")
 
@@ -322,27 +339,45 @@ def main():
     kt_val = compute_noise_power_density_dbm_mhz(temp_kelvin)
     st.sidebar.caption(f"Densidad k*T: **{kt_val:.2f} dBm/MHz** (a {temp_kelvin:.1f} K)")
 
-    b_video_mhz = st.sidebar.number_input("Ancho Banda Video, B_v (MHz)", min_value=0.1, max_value=200.0, value=10.0, step=1.0)
-    snr_min_db = st.sidebar.number_input("SNR mínimo de detección (dB)", min_value=0.0, max_value=30.0, value=12.0, step=0.5)
-    pin_rf_dbm = st.sidebar.number_input("Potencia Entrada Pin (dBm)", min_value=-130.0, max_value=30.0, value=-40.0, step=5.0)
+    b_video_mhz = st.sidebar.number_input("Ancho Banda Video, B_v (MHz)", min_value=0.1, max_value=200.0, value=10.0,
+                                          step=1.0)
+    snr_min_db = st.sidebar.number_input("SNR mínimo de detección (dB)", min_value=0.0, max_value=30.0, value=12.0,
+                                         step=0.5)
+    pin_rf_dbm = st.sidebar.number_input("Potencia Entrada Pin (dBm)", min_value=-130.0, max_value=30.0, value=-40.0,
+                                         step=5.0)
 
-    # Catálogo
+    # Catálogo con PN por defecto y OIP2/OIP3 en 249 dBm
     component_templates = {
-        "Cable Coaxial RF": {"type": "Cable RF", "gain_db": -2.5, "nf_db": 2.5, "op1db_dbm": 45.0, "oip3_dbm": 60.0, "oip2_dbm": 80.0, "opmax_dbm": 249.0},
-        "Atenuador Fijo/Variable": {"type": "Atenuador", "gain_db": -6.0, "nf_db": 6.0, "op1db_dbm": 35.0, "oip3_dbm": 50.0, "oip2_dbm": 70.0, "opmax_dbm": 249.0},
-        "Power Divider 1:2": {"type": "Divisor 1:2", "gain_db": -3.5, "nf_db": 3.5, "op1db_dbm": 40.0, "oip3_dbm": 55.0, "oip2_dbm": 75.0, "opmax_dbm": 249.0},
-        "Power Divider 1:4": {"type": "Divisor 1:4", "gain_db": -7.0, "nf_db": 7.0, "op1db_dbm": 40.0, "oip3_dbm": 55.0, "oip2_dbm": 75.0, "opmax_dbm": 249.0},
-        "Conmutador SPDT": {"type": "Switch SPDT", "gain_db": -1.2, "nf_db": 1.2, "op1db_dbm": 30.0, "oip3_dbm": 45.0, "oip2_dbm": 65.0, "opmax_dbm": 249.0},
-        "Conmutador SP3T": {"type": "Switch SP3T", "gain_db": -1.6, "nf_db": 1.6, "op1db_dbm": 28.0, "oip3_dbm": 43.0, "oip2_dbm": 63.0, "opmax_dbm": 249.0},
-        "Conmutador SP4T": {"type": "Switch SP4T", "gain_db": -2.0, "nf_db": 2.0, "op1db_dbm": 27.0, "oip3_dbm": 42.0, "oip2_dbm": 62.0, "opmax_dbm": 249.0},
-        "Diplexer (Multiplexor 2 Vías)": {"type": "Diplexer", "gain_db": -1.5, "nf_db": 1.5, "op1db_dbm": 40.0, "oip3_dbm": 55.0, "oip2_dbm": 75.0, "opmax_dbm": 249.0},
-        "Triplexer (Multiplexor 3 Vías)": {"type": "Triplexer", "gain_db": -2.2, "nf_db": 2.2, "op1db_dbm": 40.0, "oip3_dbm": 55.0, "oip2_dbm": 75.0, "opmax_dbm": 249.0},
-        "Filtro Preselector": {"type": "Filtro", "gain_db": -2.0, "nf_db": 2.0, "op1db_dbm": 35.0, "oip3_dbm": 50.0, "oip2_dbm": 70.0, "opmax_dbm": 249.0},
-        "Limitador PIN (Protección)": {"type": "Protección PIN", "gain_db": -1.0, "nf_db": 1.0, "op1db_dbm": 24.0, "oip3_dbm": 39.0, "oip2_dbm": 59.0, "opmax_dbm": 15.0},
-        "Antena ESM (Espiral / Bocina)": {"type": "Antena", "gain_db": 6.0, "nf_db": 0.0, "op1db_dbm": 50.0, "oip3_dbm": 65.0, "oip2_dbm": 85.0, "opmax_dbm": 249.0},
-        "Amplificador LNA (GaN/GaAs)": {"type": "LNA", "gain_db": 20.0, "nf_db": 2.2, "op1db_dbm": 20.0, "oip3_dbm": 32.0, "oip2_dbm": 52.0, "opmax_dbm": 249.0},
-        "Módulo Downconverter (Activo)": {"type": "Downconverter", "gain_db": 12.0, "nf_db": 6.5, "op1db_dbm": 7.0, "oip3_dbm": 17.0, "oip2_dbm": 37.0, "opmax_dbm": 10.0},
-        "Módulo UpConverter": {"type": "UpConverter", "gain_db": 10.0, "nf_db": 7.0, "op1db_dbm": 8.0, "oip3_dbm": 18.0, "oip2_dbm": 38.0, "opmax_dbm": 12.0},
+        "Cable Coaxial RF": {"type": "Cable RF", "pn": "RG-142", "gain_db": -2.5, "nf_db": 2.5, "op1db_dbm": 45.0,
+                             "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Atenuador Fijo/Variable": {"type": "Atenuador", "pn": "PE4302", "gain_db": -6.0, "nf_db": 6.0,
+                                    "op1db_dbm": 35.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Power Divider 1:2": {"type": "Divisor 1:2", "pn": "PE2000", "gain_db": -3.5, "nf_db": 3.5, "op1db_dbm": 40.0,
+                              "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Power Divider 1:4": {"type": "Divisor 1:4", "pn": "PE2002", "gain_db": -7.0, "nf_db": 7.0, "op1db_dbm": 40.0,
+                              "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Conmutador SPDT": {"type": "Switch SPDT", "pn": "PE42420", "gain_db": -1.2, "nf_db": 1.2, "op1db_dbm": 30.0,
+                            "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Conmutador SP3T": {"type": "Switch SP3T", "pn": "HMC245A", "gain_db": -1.6, "nf_db": 1.6, "op1db_dbm": 28.0,
+                            "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Conmutador SP4T": {"type": "Switch SP4T", "pn": "PE42441", "gain_db": -2.0, "nf_db": 2.0, "op1db_dbm": 27.0,
+                            "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Diplexer (Multiplexor 2 Vías)": {"type": "Diplexer", "pn": "DPX-2000", "gain_db": -1.5, "nf_db": 1.5,
+                                          "op1db_dbm": 40.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Triplexer (Multiplexor 3 Vías)": {"type": "Triplexer", "pn": "TPX-3000", "gain_db": -2.2, "nf_db": 2.2,
+                                           "op1db_dbm": 40.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Filtro Preselector": {"type": "Filtro", "pn": "BPF-0218", "gain_db": -2.0, "nf_db": 2.0, "op1db_dbm": 35.0,
+                               "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Limitador PIN (Protección)": {"type": "Protección PIN", "pn": "LM-0218", "gain_db": -1.0, "nf_db": 1.0,
+                                       "op1db_dbm": 24.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 15.0},
+        "Antena ESM (Espiral / Bocina)": {"type": "Antena", "pn": "ANT-ESM-01", "gain_db": 6.0, "nf_db": 0.0,
+                                          "op1db_dbm": 50.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+        "Amplificador LNA (GaN/GaAs)": {"type": "LNA", "pn": "CMD283C3", "gain_db": 20.0, "nf_db": 2.2,
+                                        "op1db_dbm": 20.0, "oip3_dbm": 32.0, "oip2_dbm": 52.0, "opmax_dbm": 249.0},
+        "Módulo Downconverter (Activo)": {"type": "Downconverter", "pn": "HMC7044-DC", "gain_db": 12.0, "nf_db": 6.5,
+                                          "op1db_dbm": 7.0, "oip3_dbm": 17.0, "oip2_dbm": 37.0, "opmax_dbm": 10.0},
+        "Módulo UpConverter": {"type": "UpConverter", "pn": "HMC7044-UC", "gain_db": 10.0, "nf_db": 7.0,
+                               "op1db_dbm": 8.0, "oip3_dbm": 18.0, "oip2_dbm": 38.0, "opmax_dbm": 12.0},
     }
 
     st.sidebar.markdown("---")
@@ -353,21 +388,23 @@ def main():
 
     with st.sidebar.form("add_comp_form", clear_on_submit=True):
         c_name = st.text_input("Nombre de la Etapa:", value=sel_template)
+        c_pn = st.text_input("Part Number (PN):", value=t_vals.get("pn", "N/A"))
         c_type = t_vals["type"]
 
         if is_tmpl_passive:
-            st.caption("ℹ️ *Componente Pasiva: G debe ser <= 0 dB (pérdidas). La NF se autocalcula como |G|.*")
-            raw_gain = st.number_input("Pérdida / Ganancia G (dB):", value=float(t_vals["gain_db"]), max_value=0.0, step=0.5)
+            st.caption("ℹ️ *Pasivo: G debe ser <= 0 dB. La NF es bloqueada en |G|.*")
+            raw_gain = st.number_input("Pérdida / Ganancia G (dB):", value=float(t_vals["gain_db"]), max_value=0.0,
+                                       step=0.5)
             c_gain = -abs(raw_gain)
             c_nf = abs(c_gain)
-            st.number_input("Figura de Ruido NF (dB):", value=float(c_nf), disabled=True, help="Bloqueado: Para componentes pasivas NF = |G| estrictamente.")
+            st.number_input("Figura de Ruido NF (dB):", value=float(c_nf), disabled=True)
         else:
             c_gain = st.number_input("Ganancia G (dB):", value=float(t_vals["gain_db"]), step=0.5)
             c_nf = st.number_input("Figura de Ruido NF (dB):", value=float(t_vals["nf_db"]), min_value=0.0, step=0.5)
 
         c_op1 = st.number_input("OP1dB de Salida (dBm):", value=float(t_vals["op1db_dbm"]), step=1.0)
-        c_oip3 = st.number_input("OIP3 de Salida (dBm):", value=float(t_vals.get("oip3_dbm", c_op1 + 12.0)), step=1.0)
-        c_oip2 = st.number_input("OIP2 de Salida (dBm):", value=float(t_vals.get("oip2_dbm", c_oip3 + 20.0)), step=1.0)
+        c_oip3 = st.number_input("OIP3 de Salida (dBm):", value=float(t_vals.get("oip3_dbm", 249.0)), step=1.0)
+        c_oip2 = st.number_input("OIP2 de Salida (dBm):", value=float(t_vals.get("oip2_dbm", 249.0)), step=1.0)
         c_opmax = st.number_input("OPmax Límite (dBm):", value=float(t_vals.get("opmax_dbm", 249.0)), step=1.0)
 
         if st.form_submit_button("➕ Insertar Etapa"):
@@ -375,28 +412,36 @@ def main():
                 st.session_state.stages = []
             st.session_state.stages.append({
                 "id": str(uuid.uuid4())[:8],
-                "name": c_name, "type": c_type, "gain_db": c_gain, "nf_db": c_nf,
+                "name": c_name, "pn": c_pn, "type": c_type, "gain_db": c_gain, "nf_db": c_nf,
                 "op1db_dbm": c_op1, "oip3_dbm": c_oip3, "oip2_dbm": c_oip2,
                 "opmax_dbm": c_opmax
             })
             st.rerun()
 
-    # Estado por defecto
+    # Estado por defecto con PNs y OIP2/OIP3 = 249 dBm
     if "stages" not in st.session_state:
         st.session_state.stages = [
-            {"id": "s1", "name": "Antena Espiral ESM", "type": "Antena", "gain_db": 6.0, "nf_db": 0.0, "op1db_dbm": 50.0, "oip3_dbm": 65.0, "oip2_dbm": 85.0, "opmax_dbm": 249.0},
-            {"id": "s2", "name": "Cable Coaxial Entrada", "type": "Cable RF", "gain_db": -2.5, "nf_db": 2.5, "op1db_dbm": 45.0, "oip3_dbm": 60.0, "oip2_dbm": 80.0, "opmax_dbm": 249.0},
-            {"id": "s3", "name": "Limitador PIN", "type": "Protección PIN", "gain_db": -1.0, "nf_db": 1.0, "op1db_dbm": 24.0, "oip3_dbm": 39.0, "oip2_dbm": 59.0, "opmax_dbm": 15.0},
-            {"id": "s4", "name": "LNA GaN Banda Ancha", "type": "LNA", "gain_db": 20.0, "nf_db": 2.2, "op1db_dbm": 20.0, "oip3_dbm": 32.0, "oip2_dbm": 52.0, "opmax_dbm": 249.0},
-            {"id": "s5", "name": "Diplexer Sub-Bandas", "type": "Diplexer", "gain_db": -1.5, "nf_db": 1.5, "op1db_dbm": 40.0, "oip3_dbm": 55.0, "oip2_dbm": 75.0, "opmax_dbm": 249.0},
-            {"id": "s6", "name": "Módulo Downconverter", "type": "Downconverter", "gain_db": 12.0, "nf_db": 6.5, "op1db_dbm": 7.0, "oip3_dbm": 17.0, "oip2_dbm": 37.0, "opmax_dbm": 10.0},
+            {"id": "s1", "name": "Antena Espiral ESM", "pn": "ANT-ESM-01", "type": "Antena", "gain_db": 6.0,
+             "nf_db": 0.0, "op1db_dbm": 50.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+            {"id": "s2", "name": "Cable Coaxial Entrada", "pn": "RG-142", "type": "Cable RF", "gain_db": -2.5,
+             "nf_db": 2.5, "op1db_dbm": 45.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+            {"id": "s3", "name": "Limitador PIN", "pn": "LM-0218", "type": "Protección PIN", "gain_db": -1.0,
+             "nf_db": 1.0, "op1db_dbm": 24.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 15.0},
+            {"id": "s4", "name": "LNA GaN Banda Ancha", "pn": "CMD283C3", "type": "LNA", "gain_db": 20.0, "nf_db": 2.2,
+             "op1db_dbm": 20.0, "oip3_dbm": 32.0, "oip2_dbm": 52.0, "opmax_dbm": 249.0},
+            {"id": "s5", "name": "Diplexer Sub-Bandas", "pn": "DPX-2000", "type": "Diplexer", "gain_db": -1.5,
+             "nf_db": 1.5, "op1db_dbm": 40.0, "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
+            {"id": "s6", "name": "Módulo Downconverter", "pn": "HMC7044-DC", "type": "Downconverter", "gain_db": 12.0,
+             "nf_db": 6.5, "op1db_dbm": 7.0, "oip3_dbm": 17.0, "oip2_dbm": 37.0, "opmax_dbm": 10.0},
         ]
     else:
         for s in st.session_state.stages:
             if "id" not in s:
                 s["id"] = str(uuid.uuid4())[:8]
+            if "pn" not in s:
+                s["pn"] = "N/A"
 
-    # QR en barra lateral
+    # QR
     st.sidebar.markdown("---")
     st.sidebar.subheader("📱 Acceso Móvil / QR")
     app_url = "https://apprfcascade-e2yarkcbf6pohnlcedr5mx.streamlit.app/"
@@ -416,19 +461,21 @@ def main():
     render_block_diagram_v4(st.session_state.stages, is_saturated_list, f_calc_ghz, temp_kelvin)
 
     st.subheader("🔀 Reordenamiento y Configuración de Componentes")
-    st.caption("💡 **Regla de Signos:** Para componentes pasivas la ganancia se fuerza estrictamente a negativa (G <= 0 dB) y la NF queda bloqueada en |G|. En componentes activas ambos campos son libres.")
+    st.caption(
+        "💡 **Cálculos de Entrada:** IP1dB = OP1dB - G | IIP3 = OIP3 - G | IIP2 = OIP2 - G. Para componentes pasivas NF = |G| se actualiza en tiempo real.")
 
-    col_w = [0.6, 2.2, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 1.8]
-    h0, h1, h2, h3, h4, h5, h6, h7, h8 = st.columns(col_w)
+    col_w = [0.5, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]
+    h0, h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns(col_w)
     h0.markdown("**#**")
-    h1.markdown("**Nombre / Tipo**")
+    h1.markdown("**Nombre / PN**")
     h2.markdown("**G (dB)**")
     h3.markdown("**NF (dB)**")
-    h4.markdown("**OP1 (dBm)**")
-    h5.markdown("**OIP3 (dBm)**")
-    h6.markdown("**OIP2 (dBm)**")
+    h4.markdown("**OP1 / IP1**")
+    h5.markdown("**OIP3 / IIP3**")
+    h6.markdown("**OIP2 / IIP2**")
     h7.markdown("**OPmax**")
-    h8.markdown("**Mover / Quitar**")
+    h8.markdown("**Tipo**")
+    h9.markdown("**Mover / Quitar**")
 
     warn_passive_gain = False
 
@@ -437,12 +484,14 @@ def main():
         stg_id = stg["id"]
         is_stg_passive = is_passive_component(stg.get("type", ""), stg.get("name", ""))
 
-        c0, c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(col_w)
-        c0.markdown(f"**E{i+1}**")
-        tag_color = "#4FD1C5" if is_stg_passive else "#F6AD55"
-        tag_label = "Pasivo" if is_stg_passive else "Activo"
-        c1.markdown(f"**{stg['name']}**  \n<span style='font-size:11px;color:{tag_color}'>[{tag_label}] {stg['type']}</span>", unsafe_allow_html=True)
+        c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(col_w)
+        c0.markdown(f"**E{i + 1}**")
 
+        # Nombre y PN editable en línea
+        stg['name'] = c1.text_input("Nombre", value=stg['name'], key=f"name_{stg_id}", label_visibility="collapsed")
+        stg['pn'] = c1.text_input("PN", value=stg.get('pn', 'N/A'), key=f"pn_{stg_id}", label_visibility="collapsed")
+
+        # Reactividad instantánea para pasivas
         if is_stg_passive:
             cur_g = float(stg["gain_db"])
             in_g = c2.number_input("G", value=cur_g, key=f"g_{stg_id}", label_visibility="collapsed")
@@ -451,31 +500,57 @@ def main():
                 warn_passive_gain = True
             stg["gain_db"] = in_g
             stg["nf_db"] = abs(in_g)
-            c3.number_input("NF", value=float(stg["nf_db"]), disabled=True, key=f"nf_{stg_id}", label_visibility="collapsed")
+            # Valor reactivo forzado en tiempo real
+            c3.number_input("NF", value=float(abs(in_g)), disabled=True, key=f"nf_{stg_id}",
+                            label_visibility="collapsed")
         else:
-            stg['gain_db'] = c2.number_input("G", value=float(stg['gain_db']), key=f"g_{stg_id}", label_visibility="collapsed")
-            stg['nf_db'] = c3.number_input("NF", value=float(stg['nf_db']), min_value=0.0, key=f"nf_{stg_id}", label_visibility="collapsed")
+            stg['gain_db'] = c2.number_input("G", value=float(stg['gain_db']), key=f"g_{stg_id}",
+                                             label_visibility="collapsed")
+            stg['nf_db'] = c3.number_input("NF", value=float(stg['nf_db']), min_value=0.0, key=f"nf_{stg_id}",
+                                           label_visibility="collapsed")
 
-        stg['op1db_dbm'] = c4.number_input("OP1", value=float(stg.get('op1db_dbm', 30.0)), key=f"op1_{stg_id}", label_visibility="collapsed")
-        stg['oip3_dbm'] = c5.number_input("OIP3", value=float(stg.get('oip3_dbm', stg.get('op1db_dbm', 30.0) + 12.0)), key=f"oip3_{stg_id}", label_visibility="collapsed")
-        stg['oip2_dbm'] = c6.number_input("OIP2", value=float(stg.get('oip2_dbm', stg.get('oip3_dbm', 42.0) + 20.0)), key=f"oip2_{stg_id}", label_visibility="collapsed")
-        stg['opmax_dbm'] = c7.number_input("OPmax", value=float(stg.get('opmax_dbm', 249.0)), key=f"opmax_{stg_id}", label_visibility="collapsed")
+        # Parámetros de salida e información implícita de entrada
+        stg['op1db_dbm'] = c4.number_input("OP1", value=float(stg.get('op1db_dbm', 30.0)), key=f"op1_{stg_id}",
+                                           label_visibility="collapsed")
+        calc_ip1_val = stg['op1db_dbm'] - stg['gain_db']
+        c4.caption(f"IP1: {calc_ip1_val:+.1f}dBm")
 
-        btn_col1, btn_col2, btn_col3 = c8.columns(3)
+        stg['oip3_dbm'] = c5.number_input("OIP3", value=float(stg.get('oip3_dbm', 249.0)), key=f"oip3_{stg_id}",
+                                          label_visibility="collapsed")
+        calc_iip3_val = stg['oip3_dbm'] - stg['gain_db']
+        c5.caption(f"IIP3: {calc_iip3_val:+.1f}dBm")
+
+        stg['oip2_dbm'] = c6.number_input("OIP2", value=float(stg.get('oip2_dbm', 249.0)), key=f"oip2_{stg_id}",
+                                          label_visibility="collapsed")
+        calc_iip2_val = stg['oip2_dbm'] - stg['gain_db']
+        c6.caption(f"IIP2: {calc_iip2_val:+.1f}dBm")
+
+        stg['opmax_dbm'] = c7.number_input("OPmax", value=float(stg.get('opmax_dbm', 249.0)), key=f"opmax_{stg_id}",
+                                           label_visibility="collapsed")
+
+        tag_color = "#4FD1C5" if is_stg_passive else "#F6AD55"
+        tag_label = "Pasivo" if is_stg_passive else "Activo"
+        c8.markdown(f"<span style='font-size:11px;color:{tag_color}'>[{tag_label}]<br>{stg['type']}</span>",
+                    unsafe_allow_html=True)
+
+        btn_col1, btn_col2, btn_col3 = c9.columns(3)
         if i > 0:
             if btn_col1.button("⬅️", key=f"up_{stg_id}", help="Mover hacia Antena"):
-                st.session_state.stages[i], st.session_state.stages[i-1] = st.session_state.stages[i-1], st.session_state.stages[i]
+                st.session_state.stages[i], st.session_state.stages[i - 1] = st.session_state.stages[i - 1], \
+                st.session_state.stages[i]
                 st.rerun()
         if i < len(st.session_state.stages) - 1:
             if btn_col2.button("➡️", key=f"down_{stg_id}", help="Mover hacia Salida"):
-                st.session_state.stages[i], st.session_state.stages[i+1] = st.session_state.stages[i+1], st.session_state.stages[i]
+                st.session_state.stages[i], st.session_state.stages[i + 1] = st.session_state.stages[i + 1], \
+                st.session_state.stages[i]
                 st.rerun()
         if btn_col3.button("❌", key=f"del_{stg_id}", help="Eliminar etapa"):
             st.session_state.stages.pop(i)
             st.rerun()
 
     if warn_passive_gain:
-        st.warning("⚠️ **Aviso de signo:** Se detectó un valor positivo de ganancia en una componente pasiva. Se auto-corrigió a negativo (pérdida de inserción) y la NF se igualó a su valor absoluto.")
+        st.warning(
+            "⚠️ **Aviso de signo:** En componentes pasivas la ganancia representa pérdidas de inserción y se forzó a negativo (-X.X dB).")
 
     if st.button("🗑️ Vaciar Toda la Cadena"):
         st.session_state.stages = []
@@ -494,7 +569,8 @@ def main():
 
     if any(summary["is_saturated"]):
         sat_names = [results_df.loc[i, "Etapa"] for i, sat in enumerate(summary["is_saturated"]) if sat]
-        st.error(f"🚨 **¡SATURACIÓN DETECTADA!** Etapas en compresión con Pin = {pin_rf_dbm} dBm: **{', '.join(sat_names)}**.")
+        st.error(
+            f"🚨 **¡SATURACIÓN DETECTADA!** Etapas en compresión con Pin = {pin_rf_dbm} dBm: **{', '.join(sat_names)}**.")
     else:
         st.success(f"✅ **Operación Lineal Verificada:** Sin compresión para Pin = {pin_rf_dbm} dBm.")
 
@@ -516,26 +592,34 @@ def main():
     st.subheader("📈 Gráfica de Cascada con Parámetro Seleccionable")
 
     param_options = {
-        "NF Friis": {"col": "NF Acum Friis [dB]", "y_label": "Figura de Ruido Acumulada Friis (dB)", "color": "#FF5252", "unit": "dB"},
-        "NF Etapa": {"col": "NF Etapa [dB]", "y_label": "Figura de Ruido Nominal de la Etapa (dB)", "color": "#FF7A00", "unit": "dB"},
-        "Gain": {"col": "Gain Acum [dB]", "y_label": "Ganancia Acumulada (dB)", "color": "#00E676", "unit": "dB"},
-        "OIP2": {"col": "OIP2 Acum [dBm]", "y_label": "Punto de Intercepción OIP2 Acumulado (dBm)", "color": "#E040FB", "unit": "dBm"},
-        "OIP3": {"col": "OIP3 Acum [dBm]", "y_label": "Punto de Intercepción OIP3 Acumulado (dBm)", "color": "#AB47BC", "unit": "dBm"},
         "Psig": {"col": "Psig [dBm]", "y_label": "Nivel de Señal de RF (dBm)", "color": "#29B6F6", "unit": "dBm"},
-        "Pnoise": {"col": "Pnoise [dBm]", "y_label": "Piso de Ruido Térmico Integrado (dBm)", "color": "#90A4AE", "unit": "dBm"},
+        "NF Friis": {"col": "NF Acum Friis [dB]", "y_label": "Figura de Ruido Acumulada Friis (dB)", "color": "#FF5252",
+                     "unit": "dB"},
+        "NF Etapa": {"col": "NF Etapa [dB]", "y_label": "Figura de Ruido Nominal de la Etapa (dB)", "color": "#FF7A00",
+                     "unit": "dB"},
+        "Gain": {"col": "Gain Acum [dB]", "y_label": "Ganancia Acumulada (dB)", "color": "#00E676", "unit": "dB"},
+        "OIP2": {"col": "OIP2 Acum [dBm]", "y_label": "Punto de Intercepción OIP2 Acumulado (dBm)", "color": "#E040FB",
+                 "unit": "dBm"},
+        "OIP3": {"col": "OIP3 Acum [dBm]", "y_label": "Punto de Intercepción OIP3 Acumulado (dBm)", "color": "#AB47BC",
+                 "unit": "dBm"},
+        "Pnoise": {"col": "Pnoise [dBm]", "y_label": "Piso de Ruido Térmico Integrado (dBm)", "color": "#90A4AE",
+                   "unit": "dBm"},
         "SNR": {"col": "SNR [dB]", "y_label": "Relación Señal a Ruido SNR (dB)", "color": "#FFD600", "unit": "dB"},
-        "OP1db": {"col": "OP1 Acum [dBm]", "y_label": "Límite de Compresión OP1dB (dBm)", "color": "#FF9800", "unit": "dBm"},
-        "PMaxLimited": {"col": "PMaxLimited [dBm]", "y_label": "Potencia Máxima Limitada (dBm)", "color": "#D50000", "unit": "dBm"}
+        "OP1db": {"col": "OP1 Acum [dBm]", "y_label": "Límite de Compresión OP1dB (dBm)", "color": "#FF9800",
+                  "unit": "dBm"},
+        "PMaxLimited": {"col": "PMaxLimited [dBm]", "y_label": "Potencia Máxima Limitada (dBm)", "color": "#D50000",
+                        "unit": "dBm"}
     }
 
     col_sel1, col_sel2 = st.columns(2)
     with col_sel1:
-        selected_param = st.selectbox("Selecciona el parámetro a graficar:", options=list(param_options.keys()), index=0)
+        selected_param = st.selectbox("Selecciona el parámetro a graficar:", options=list(param_options.keys()),
+                                      index=0)
     with col_sel2:
         param_info = param_options[selected_param]
         st.info(f"Visualizando: **{param_info['y_label']}** | @ **{f_calc_ghz:.2f} GHz, {temp_kelvin:.1f} K**")
 
-    stage_names = [f"E{i+1}: {s['name']}" for i, s in enumerate(st.session_state.stages)]
+    stage_names = [f"E{i + 1}: {s['name']}" for i, s in enumerate(st.session_state.stages)]
     y_values = results_df[param_info["col"]].values
 
     fig = go.Figure()
@@ -546,15 +630,26 @@ def main():
         line=dict(color=param_info["color"], width=3)
     ))
 
+    # Trazas de referencia en la gráfica Psig: Límite OP1, Umbral IP1dB de la Etapa y Piso de Ruido
+    if selected_param == "Psig":
+        fig.add_trace(go.Scatter(
+            x=stage_names, y=results_df["OP1 Acum [dBm]"], mode="lines+markers",
+            name="Límite OP1dB Salida", line=dict(color="#FF9800", width=2, dash="dash")
+        ))
+        fig.add_trace(go.Scatter(
+            x=stage_names, y=results_df["IP1dB Entrada [dBm]"], mode="lines+markers",
+            name="Saturación IP1dB Entrada (Etapa)", line=dict(color="#E53E3E", width=2, dash="dot")
+        ))
+        fig.add_trace(go.Scatter(
+            x=stage_names, y=results_df["Pnoise [dBm]"], mode="lines",
+            name="Piso Ruido Pnoise", line=dict(color="#90A4AE", width=2, dash="dot")
+        ))
+
     if selected_param == "NF Friis":
         fig.add_trace(go.Scatter(
             x=stage_names, y=results_df["NF Etapa [dB]"], mode="lines+markers",
             name="NF Nominal Etapa", line=dict(color="#FFB300", width=2, dash="dash")
         ))
-
-    if selected_param == "Psig":
-        fig.add_trace(go.Scatter(x=stage_names, y=results_df["OP1 Acum [dBm]"], mode="lines", name="Límite OP1dB", line=dict(color="#FF9800", width=2, dash="dash")))
-        fig.add_trace(go.Scatter(x=stage_names, y=results_df["Pnoise [dBm]"], mode="lines", name="Piso Ruido Pnoise", line=dict(color="#90A4AE", width=2, dash="dot")))
 
     fig.update_layout(
         title=f"Evolución de {param_info['y_label']} en la Cadena [f_calc = {f_calc_ghz:.2f} GHz | T = {temp_kelvin:.1f} K | Pin = {pin_rf_dbm} dBm]",
@@ -573,11 +668,12 @@ def main():
 
     csv_data = results_df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        label=f"📥 Exportar Tabla Completa @ {f_calc_ghz:.2f}GHz & {temp_kelvin:.0f}K (CSV)",
+        label=f"📥 Exportar Tabla Completa con PNs @ {f_calc_ghz:.2f}GHz & {temp_kelvin:.0f}K (CSV)",
         data=csv_data,
         file_name=f"cascada_fer_{f_calc_ghz:.2f}GHz_{temp_kelvin:.0f}K.csv",
         mime="text/csv"
     )
+
 
 if __name__ == "__main__":
     main()
