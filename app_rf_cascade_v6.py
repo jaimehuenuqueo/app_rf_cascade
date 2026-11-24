@@ -1,13 +1,13 @@
 """
-Simulador Interactivo de Cascada de RF para Front-End Receiver (FER) - Versión 6.5
+Simulador Interactivo de Cascada de RF para Front-End Receiver (FER) - Versión 6.6
 Autor: Jaime Huenuqueo Salazar| Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM
 
-Mejoras v4.5:
-1. Auto-actualización reactiva de NF = |G| en componentes pasivas en la tabla de reordenamiento.
-2. Incorporación de los campos IIP2 (dBm), IIP3 (dBm) e IP1dB (dBm = OP1dB - G) en la interfaz.
-3. Despliegue de la curva de IP1dB (saturación de entrada) en la gráfica de Psig.
-4. Valores por defecto de OIP2 y OIP3 fijados en 249.0 dBm para componentes ideales/pasivas.
-5. Campo Part Number (PN) por componente para trazabilidad de modelos reales y exportación en CSV.
+Mejoras v6.6:
+1. Sincronización reactiva síncrona en Streamlit: NF = |G| se actualiza de forma instantánea al editar G en pasivas.
+2. Coerción estricta de signo: Si G > 0 en pasivos, se auto-corrige a -|G| y actualiza el widget en tiempo real.
+3. Corrección de valores por defecto de OP1dB, OIP3 y OIP2 (249 dBm por defecto para pasivos) sincronizados con session_state.
+4. Despliegue de IIP2, IIP3 e IP1dB en tabla y curva de IP1dB en el gráfico de Psig.
+5. Inclusión de Part Numbers (PN) por componente y exportación CSV.
 """
 
 import io
@@ -19,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(
-    page_title="Simulador FER v4.5 - Jaime",
+    page_title="Simulador FER v4.6 - Jaime",
     page_icon="📡",
     layout="wide"
 )
@@ -112,7 +112,7 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
     for i, stg in enumerate(stages):
         g_i_db = float(stg["gain_db"])
 
-        # Coerción de componentes pasivas
+        # Regla física de componentes pasivas
         if is_passive_component(stg.get("type", ""), stg.get("name", "")):
             if g_i_db > 0:
                 g_i_db = -abs(g_i_db)
@@ -302,7 +302,7 @@ def render_block_diagram_v4(stages, is_saturated, f_calc_ghz, temp_kelvin):
 
 
 def main():
-    st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) V6.5")
+    st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) V6.6")
     st.caption("Autor: **Jaime Huenuqueo Salazar** | *Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM*")
 
     st.sidebar.header("🌐 Cobertura Espectral")
@@ -346,7 +346,7 @@ def main():
     pin_rf_dbm = st.sidebar.number_input("Potencia Entrada Pin (dBm)", min_value=-130.0, max_value=30.0, value=-40.0,
                                          step=5.0)
 
-    # Catálogo con PN por defecto y OIP2/OIP3 en 249 dBm
+    # Catálogo
     component_templates = {
         "Cable Coaxial RF": {"type": "Cable RF", "pn": "RG-142", "gain_db": -2.5, "nf_db": 2.5, "op1db_dbm": 45.0,
                              "oip3_dbm": 249.0, "oip2_dbm": 249.0, "opmax_dbm": 249.0},
@@ -392,7 +392,7 @@ def main():
         c_type = t_vals["type"]
 
         if is_tmpl_passive:
-            st.caption("ℹ️ *Pasivo: G debe ser <= 0 dB. La NF es bloqueada en |G|.*")
+            st.caption("ℹ️ *Pasivo: G debe ser <= 0 dB. La NF se fija en |G|.*")
             raw_gain = st.number_input("Pérdida / Ganancia G (dB):", value=float(t_vals["gain_db"]), max_value=0.0,
                                        step=0.5)
             c_gain = -abs(raw_gain)
@@ -418,7 +418,7 @@ def main():
             })
             st.rerun()
 
-    # Estado por defecto con PNs y OIP2/OIP3 = 249 dBm
+    # Inicialización por defecto
     if "stages" not in st.session_state:
         st.session_state.stages = [
             {"id": "s1", "name": "Antena Espiral ESM", "pn": "ANT-ESM-01", "type": "Antena", "gain_db": 6.0,
@@ -462,7 +462,7 @@ def main():
 
     st.subheader("🔀 Reordenamiento y Configuración de Componentes")
     st.caption(
-        "💡 **Cálculos de Entrada:** IP1dB = OP1dB - G | IIP3 = OIP3 - G | IIP2 = OIP2 - G. Para componentes pasivas NF = |G| se actualiza en tiempo real.")
+        "💡 **Reactividad Síncrona:** En componentes pasivas, al cambiar G la NF se actualiza en tiempo real (|G|) y la ganancia se fuerza a negativa. OP1, OIP3 y OIP2 se vinculan a la etapa.")
 
     col_w = [0.5, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]
     h0, h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns(col_w)
@@ -487,46 +487,63 @@ def main():
         c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(col_w)
         c0.markdown(f"**E{i + 1}**")
 
-        # Nombre y PN editable en línea
+        # Nombre y PN
         stg['name'] = c1.text_input("Nombre", value=stg['name'], key=f"name_{stg_id}", label_visibility="collapsed")
         stg['pn'] = c1.text_input("PN", value=stg.get('pn', 'N/A'), key=f"pn_{stg_id}", label_visibility="collapsed")
 
-        # Reactividad instantánea para pasivas
+        # --- SINCRONIZACIÓN REACTIVA DE ESTADO EN STREAMLIT ---
         if is_stg_passive:
-            cur_g = float(stg["gain_db"])
-            in_g = c2.number_input("G", value=cur_g, key=f"g_{stg_id}", label_visibility="collapsed")
-            if in_g > 0:
-                in_g = -abs(in_g)
-                warn_passive_gain = True
-            stg["gain_db"] = in_g
-            stg["nf_db"] = abs(in_g)
-            # Valor reactivo forzado en tiempo real
-            c3.number_input("NF", value=float(abs(in_g)), disabled=True, key=f"nf_{stg_id}",
-                            label_visibility="collapsed")
-        else:
-            stg['gain_db'] = c2.number_input("G", value=float(stg['gain_db']), key=f"g_{stg_id}",
-                                             label_visibility="collapsed")
-            stg['nf_db'] = c3.number_input("NF", value=float(stg['nf_db']), min_value=0.0, key=f"nf_{stg_id}",
-                                           label_visibility="collapsed")
+            # Obtener ganancia actual de la clave si ya fue manipulada por el usuario
+            if f"g_{stg_id}" in st.session_state:
+                cur_g = float(st.session_state[f"g_{stg_id}"])
+            else:
+                cur_g = float(stg["gain_db"])
 
-        # Parámetros de salida e información implícita de entrada
-        stg['op1db_dbm'] = c4.number_input("OP1", value=float(stg.get('op1db_dbm', 30.0)), key=f"op1_{stg_id}",
-                                           label_visibility="collapsed")
+            if cur_g > 0:
+                cur_g = -abs(cur_g)
+                st.session_state[f"g_{stg_id}"] = cur_g
+                warn_passive_gain = True
+
+            stg["gain_db"] = cur_g
+            stg["nf_db"] = abs(cur_g)
+
+            # Forzado explícito en session_state para actualizar síncronamente el widget de NF
+            st.session_state[f"nf_{stg_id}"] = float(abs(cur_g))
+
+            c2.number_input("G", key=f"g_{stg_id}", label_visibility="collapsed")
+            c3.number_input("NF", key=f"nf_{stg_id}", disabled=True, label_visibility="collapsed")
+        else:
+            if f"g_{stg_id}" not in st.session_state:
+                st.session_state[f"g_{stg_id}"] = float(stg["gain_db"])
+            if f"nf_{stg_id}" not in st.session_state:
+                st.session_state[f"nf_{stg_id}"] = float(stg["nf_db"])
+
+            stg['gain_db'] = c2.number_input("G", key=f"g_{stg_id}", label_visibility="collapsed")
+            stg['nf_db'] = c3.number_input("NF", min_value=0.0, key=f"nf_{stg_id}", label_visibility="collapsed")
+
+        # Parámetros de no linealidad con clave pre-sincronizada
+        if f"op1_{stg_id}" not in st.session_state:
+            st.session_state[f"op1_{stg_id}"] = float(stg.get("op1db_dbm", 30.0))
+        if f"oip3_{stg_id}" not in st.session_state:
+            st.session_state[f"oip3_{stg_id}"] = float(stg.get("oip3_dbm", 249.0))
+        if f"oip2_{stg_id}" not in st.session_state:
+            st.session_state[f"oip2_{stg_id}"] = float(stg.get("oip2_dbm", 249.0))
+        if f"opmax_{stg_id}" not in st.session_state:
+            st.session_state[f"opmax_{stg_id}"] = float(stg.get("opmax_dbm", 249.0))
+
+        stg['op1db_dbm'] = c4.number_input("OP1", key=f"op1_{stg_id}", label_visibility="collapsed")
         calc_ip1_val = stg['op1db_dbm'] - stg['gain_db']
         c4.caption(f"IP1: {calc_ip1_val:+.1f}dBm")
 
-        stg['oip3_dbm'] = c5.number_input("OIP3", value=float(stg.get('oip3_dbm', 249.0)), key=f"oip3_{stg_id}",
-                                          label_visibility="collapsed")
+        stg['oip3_dbm'] = c5.number_input("OIP3", key=f"oip3_{stg_id}", label_visibility="collapsed")
         calc_iip3_val = stg['oip3_dbm'] - stg['gain_db']
         c5.caption(f"IIP3: {calc_iip3_val:+.1f}dBm")
 
-        stg['oip2_dbm'] = c6.number_input("OIP2", value=float(stg.get('oip2_dbm', 249.0)), key=f"oip2_{stg_id}",
-                                          label_visibility="collapsed")
+        stg['oip2_dbm'] = c6.number_input("OIP2", key=f"oip2_{stg_id}", label_visibility="collapsed")
         calc_iip2_val = stg['oip2_dbm'] - stg['gain_db']
         c6.caption(f"IIP2: {calc_iip2_val:+.1f}dBm")
 
-        stg['opmax_dbm'] = c7.number_input("OPmax", value=float(stg.get('opmax_dbm', 249.0)), key=f"opmax_{stg_id}",
-                                           label_visibility="collapsed")
+        stg['opmax_dbm'] = c7.number_input("OPmax", key=f"opmax_{stg_id}", label_visibility="collapsed")
 
         tag_color = "#4FD1C5" if is_stg_passive else "#F6AD55"
         tag_label = "Pasivo" if is_stg_passive else "Activo"
@@ -550,7 +567,7 @@ def main():
 
     if warn_passive_gain:
         st.warning(
-            "⚠️ **Aviso de signo:** En componentes pasivas la ganancia representa pérdidas de inserción y se forzó a negativo (-X.X dB).")
+            "⚠️ **Aviso de signo:** En componentes pasivas la ganancia se forzó a negativa (-X.X dB) y la NF se actualizó síncronamente a |G|.")
 
     if st.button("🗑️ Vaciar Toda la Cadena"):
         st.session_state.stages = []
@@ -630,7 +647,6 @@ def main():
         line=dict(color=param_info["color"], width=3)
     ))
 
-    # Trazas de referencia en la gráfica Psig: Límite OP1, Umbral IP1dB de la Etapa y Piso de Ruido
     if selected_param == "Psig":
         fig.add_trace(go.Scatter(
             x=stage_names, y=results_df["OP1 Acum [dBm]"], mode="lines+markers",
