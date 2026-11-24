@@ -1,13 +1,13 @@
 """
-Simulador Interactivo de Cascada de RF para Front-End Receiver (FER) - Versión 6.6
-Autor: Jaime Huenuqueo Salazar| Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM
+Simulador Interactivo de Cascada de RF para Front-End Receiver (FER) - Versión 6.7
+Autor: Jaime | Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM
 
-Mejoras v6.6:
-1. Sincronización reactiva síncrona en Streamlit: NF = |G| se actualiza de forma instantánea al editar G en pasivas.
-2. Coerción estricta de signo: Si G > 0 en pasivos, se auto-corrige a -|G| y actualiza el widget en tiempo real.
-3. Corrección de valores por defecto de OP1dB, OIP3 y OIP2 (249 dBm por defecto para pasivos) sincronizados con session_state.
-4. Despliegue de IIP2, IIP3 e IP1dB en tabla y curva de IP1dB en el gráfico de Psig.
-5. Inclusión de Part Numbers (PN) por componente y exportación CSV.
+Mejoras v6.7:
+1. Corrección total del menú 'Añadir Etapa': actualización reactiva síncrona sin congelamiento por st.form.
+2. Inclusión formal de la métrica TSS (Tangential Signal Sensitivity) para detectores DLVA.
+3. Control interactivo de Ancho de Banda de Video (B_v) integrado al cálculo de TSS.
+4. Despliegue de métricas clave completas: MDS, TSS, SFDR, IDR, IP1dB, OIP3, OIP2.
+5. Sección desplegable final con el Resumen de Fórmulas y Fundamentos Teóricos.
 """
 
 import io
@@ -19,7 +19,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 st.set_page_config(
-    page_title="Simulador FER v4.6 - Jaime",
+    page_title="Simulador FER v4.7 - Jaime",
     page_icon="📡",
     layout="wide"
 )
@@ -33,7 +33,6 @@ PASSIVE_KEYWORDS = [
 
 
 def is_passive_component(comp_type: str, comp_name: str = "") -> bool:
-    """Identifica si una componente es física y termodinámicamente pasiva."""
     target = f"{comp_type} {comp_name}".lower()
     return any(k in target for k in PASSIVE_KEYWORDS)
 
@@ -112,7 +111,6 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
     for i, stg in enumerate(stages):
         g_i_db = float(stg["gain_db"])
 
-        # Regla física de componentes pasivas
         if is_passive_component(stg.get("type", ""), stg.get("name", "")):
             if g_i_db > 0:
                 g_i_db = -abs(g_i_db)
@@ -127,7 +125,6 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
         oip2_i_dbm = float(stg.get("oip2_dbm", 249.0))
         opmax_stage = float(stg.get("opmax_dbm", 249.0))
 
-        # Cálculo de parámetros referidos a la entrada
         ip1db_i_dbm = op1_i_dbm - g_i_db
         iip3_i_dbm = oip3_i_dbm - g_i_db
         iip2_i_dbm = oip2_i_dbm - g_i_db
@@ -187,8 +184,11 @@ def compute_cascade_v4(stages, b_rf_mhz, b_video_mhz, snr_min_db, pin_rf_dbm, te
     total_op1db = cum_op1db_dbm[-1]
 
     mds_rf_dbm = kt0_dbm_mhz + 10.0 * np.log10(b_rf_mhz) + total_nf + snr_min_db
+
+    # Ecuación Tsui/Lucas para TSS en receptores DLVA/detector
     term_inside = 2.5 * b_video_mhz + 4.0 * np.sqrt(np.maximum(2.0 * b_rf_mhz * b_video_mhz - (b_video_mhz ** 2), 1e-6))
     tss_video_dbm = kt0_dbm_mhz + total_nf + 10.0 * np.log10(np.maximum(term_inside, 1e-6))
+
     sfdr_db = (2.0 / 3.0) * (total_iip3 - (kt0_dbm_mhz + 10.0 * np.log10(b_rf_mhz) + total_nf))
     idr_db = total_ip1db - mds_rf_dbm
 
@@ -302,7 +302,7 @@ def render_block_diagram_v4(stages, is_saturated, f_calc_ghz, temp_kelvin):
 
 
 def main():
-    st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) V6.6")
+    st.title("📡 Simulador de Cascada de RF - Front-End Receiver (FER) v6.7")
     st.caption("Autor: **Jaime Huenuqueo Salazar** | *Libro: Fundamentos y Diseño de Sistemas de Guerra Electrónica / ESM*")
 
     st.sidebar.header("🌐 Cobertura Espectral")
@@ -340,7 +340,7 @@ def main():
     st.sidebar.caption(f"Densidad k*T: **{kt_val:.2f} dBm/MHz** (a {temp_kelvin:.1f} K)")
 
     b_video_mhz = st.sidebar.number_input("Ancho Banda Video, B_v (MHz)", min_value=0.1, max_value=200.0, value=10.0,
-                                          step=1.0)
+                                          step=1.0, help="Ancho de banda post-detección de envolvente (DLVA)")
     snr_min_db = st.sidebar.number_input("SNR mínimo de detección (dB)", min_value=0.0, max_value=30.0, value=12.0,
                                          step=0.5)
     pin_rf_dbm = st.sidebar.number_input("Potencia Entrada Pin (dBm)", min_value=-130.0, max_value=30.0, value=-40.0,
@@ -380,45 +380,50 @@ def main():
                                "op1db_dbm": 8.0, "oip3_dbm": 18.0, "oip2_dbm": 38.0, "opmax_dbm": 12.0},
     }
 
+    # --- SECCIÓN AÑADIR ETAPA (CORREGIDA SIN ST.FORM RIGIDO) ---
     st.sidebar.markdown("---")
     st.sidebar.header("➕ Añadir Etapa")
     sel_template = st.sidebar.selectbox("Seleccionar Plantilla:", list(component_templates.keys()))
     t_vals = component_templates[sel_template]
     is_tmpl_passive = is_passive_component(t_vals["type"], sel_template)
 
-    with st.sidebar.form("add_comp_form", clear_on_submit=True):
-        c_name = st.text_input("Nombre de la Etapa:", value=sel_template)
-        c_pn = st.text_input("Part Number (PN):", value=t_vals.get("pn", "N/A"))
-        c_type = t_vals["type"]
+    c_name = st.sidebar.text_input("Nombre de la Etapa:", value=sel_template)
+    c_pn = st.sidebar.text_input("Part Number (PN):", value=t_vals.get("pn", "N/A"))
+    c_type = t_vals["type"]
 
-        if is_tmpl_passive:
-            st.caption("ℹ️ *Pasivo: G debe ser <= 0 dB. La NF se fija en |G|.*")
-            raw_gain = st.number_input("Pérdida / Ganancia G (dB):", value=float(t_vals["gain_db"]), max_value=0.0,
-                                       step=0.5)
-            c_gain = -abs(raw_gain)
-            c_nf = abs(c_gain)
-            st.number_input("Figura de Ruido NF (dB):", value=float(c_nf), disabled=True)
-        else:
-            c_gain = st.number_input("Ganancia G (dB):", value=float(t_vals["gain_db"]), step=0.5)
-            c_nf = st.number_input("Figura de Ruido NF (dB):", value=float(t_vals["nf_db"]), min_value=0.0, step=0.5)
+    if is_tmpl_passive:
+        st.sidebar.caption("ℹ️ *Pasivo: G debe ser <= 0 dB. La NF se autocalcula como |G|.*")
+        raw_gain = st.sidebar.number_input("Pérdida / Ganancia G (dB):", value=float(t_vals["gain_db"]), max_value=0.0,
+                                           step=0.5, key="sidebar_add_g")
+        if raw_gain > 0:
+            raw_gain = -abs(raw_gain)
+            st.sidebar.warning("⚠️ Valor forzado a negativo")
+        c_gain = raw_gain
+        c_nf = abs(c_gain)
+        st.sidebar.number_input("Figura de Ruido NF (dB):", value=float(c_nf), disabled=True, key="sidebar_add_nf_dis")
+    else:
+        c_gain = st.sidebar.number_input("Ganancia G (dB):", value=float(t_vals["gain_db"]), step=0.5,
+                                         key="sidebar_add_g_act")
+        c_nf = st.sidebar.number_input("Figura de Ruido NF (dB):", value=float(t_vals["nf_db"]), min_value=0.0,
+                                       step=0.5, key="sidebar_add_nf_act")
 
-        c_op1 = st.number_input("OP1dB de Salida (dBm):", value=float(t_vals["op1db_dbm"]), step=1.0)
-        c_oip3 = st.number_input("OIP3 de Salida (dBm):", value=float(t_vals.get("oip3_dbm", 249.0)), step=1.0)
-        c_oip2 = st.number_input("OIP2 de Salida (dBm):", value=float(t_vals.get("oip2_dbm", 249.0)), step=1.0)
-        c_opmax = st.number_input("OPmax Límite (dBm):", value=float(t_vals.get("opmax_dbm", 249.0)), step=1.0)
+    c_op1 = st.sidebar.number_input("OP1dB de Salida (dBm):", value=float(t_vals["op1db_dbm"]), step=1.0)
+    c_oip3 = st.sidebar.number_input("OIP3 de Salida (dBm):", value=float(t_vals.get("oip3_dbm", 249.0)), step=1.0)
+    c_oip2 = st.sidebar.number_input("OIP2 de Salida (dBm):", value=float(t_vals.get("oip2_dbm", 249.0)), step=1.0)
+    c_opmax = st.sidebar.number_input("OPmax Límite (dBm):", value=float(t_vals.get("opmax_dbm", 249.0)), step=1.0)
 
-        if st.form_submit_button("➕ Insertar Etapa"):
-            if "stages" not in st.session_state:
-                st.session_state.stages = []
-            st.session_state.stages.append({
-                "id": str(uuid.uuid4())[:8],
-                "name": c_name, "pn": c_pn, "type": c_type, "gain_db": c_gain, "nf_db": c_nf,
-                "op1db_dbm": c_op1, "oip3_dbm": c_oip3, "oip2_dbm": c_oip2,
-                "opmax_dbm": c_opmax
-            })
-            st.rerun()
+    if st.sidebar.button("➕ Insertar Etapa en la Cadena", use_container_width=True):
+        if "stages" not in st.session_state:
+            st.session_state.stages = []
+        st.session_state.stages.append({
+            "id": str(uuid.uuid4())[:8],
+            "name": c_name, "pn": c_pn, "type": c_type, "gain_db": c_gain, "nf_db": c_nf,
+            "op1db_dbm": c_op1, "oip3_dbm": c_oip3, "oip2_dbm": c_oip2,
+            "opmax_dbm": c_opmax
+        })
+        st.rerun()
 
-    # Inicialización por defecto
+    # Estado por defecto
     if "stages" not in st.session_state:
         st.session_state.stages = [
             {"id": "s1", "name": "Antena Espiral ESM", "pn": "ANT-ESM-01", "type": "Antena", "gain_db": 6.0,
@@ -462,7 +467,7 @@ def main():
 
     st.subheader("🔀 Reordenamiento y Configuración de Componentes")
     st.caption(
-        "💡 **Reactividad Síncrona:** En componentes pasivas, al cambiar G la NF se actualiza en tiempo real (|G|) y la ganancia se fuerza a negativa. OP1, OIP3 y OIP2 se vinculan a la etapa.")
+        "💡 **Reactividad Síncrona:** En componentes pasivas, al cambiar G la NF se actualiza en tiempo real (|G|) y la ganancia se fuerza a negativa.")
 
     col_w = [0.5, 2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.5]
     h0, h1, h2, h3, h4, h5, h6, h7, h8, h9 = st.columns(col_w)
@@ -487,13 +492,10 @@ def main():
         c0, c1, c2, c3, c4, c5, c6, c7, c8, c9 = st.columns(col_w)
         c0.markdown(f"**E{i + 1}**")
 
-        # Nombre y PN
         stg['name'] = c1.text_input("Nombre", value=stg['name'], key=f"name_{stg_id}", label_visibility="collapsed")
         stg['pn'] = c1.text_input("PN", value=stg.get('pn', 'N/A'), key=f"pn_{stg_id}", label_visibility="collapsed")
 
-        # --- SINCRONIZACIÓN REACTIVA DE ESTADO EN STREAMLIT ---
         if is_stg_passive:
-            # Obtener ganancia actual de la clave si ya fue manipulada por el usuario
             if f"g_{stg_id}" in st.session_state:
                 cur_g = float(st.session_state[f"g_{stg_id}"])
             else:
@@ -506,8 +508,6 @@ def main():
 
             stg["gain_db"] = cur_g
             stg["nf_db"] = abs(cur_g)
-
-            # Forzado explícito en session_state para actualizar síncronamente el widget de NF
             st.session_state[f"nf_{stg_id}"] = float(abs(cur_g))
 
             c2.number_input("G", key=f"g_{stg_id}", label_visibility="collapsed")
@@ -521,7 +521,6 @@ def main():
             stg['gain_db'] = c2.number_input("G", key=f"g_{stg_id}", label_visibility="collapsed")
             stg['nf_db'] = c3.number_input("NF", min_value=0.0, key=f"nf_{stg_id}", label_visibility="collapsed")
 
-        # Parámetros de no linealidad con clave pre-sincronizada
         if f"op1_{stg_id}" not in st.session_state:
             st.session_state[f"op1_{stg_id}"] = float(stg.get("op1db_dbm", 30.0))
         if f"oip3_{stg_id}" not in st.session_state:
@@ -602,8 +601,9 @@ def main():
     m6.metric("O-P1dB Salida", f"{summary['total_op1db_dbm']:.1f} dBm")
     m7.metric("OIP3 Salida", f"{summary['total_oip3_dbm']:.1f} dBm")
     m8.metric("OIP2 Salida", f"{summary['total_oip2_dbm']:.1f} dBm")
-    m9.metric("Sensibilidad MDS", f"{summary['mds_rf_dbm']:.1f} dBm")
-    m10.metric("Rango Dinámico SFDR", f"{summary['sfdr_db']:.1f} dB")
+    m9.metric("Sensibilidad MDS (RF)", f"{summary['mds_rf_dbm']:.1f} dBm", help="MDS para canal de RF superheterodino")
+    m10.metric("TSS (Salida DLVA)", f"{summary['tss_video_dbm']:.1f} dBm",
+               help="Sensibilidad de Señal Tangencial a la salida del diodo detector/DLVA")
 
     st.markdown("---")
     st.subheader("📈 Gráfica de Cascada con Parámetro Seleccionable")
@@ -690,6 +690,43 @@ def main():
         mime="text/csv"
     )
 
+    # --- SECCIÓN DE RESUMEN DE FÓRMULAS ---
+    st.markdown("---")
+    with st.expander("📚 Resumen de Fórmulas y Fundamentos Teóricos de Cascada"):
+        st.markdown(r"""
+        ### Ecuaciones y Fundamentos del Motor de Cálculo
+
+        #### 1. Figura de Ruido Acumulada (Fórmula de Friis)
+        La Figura de Ruido acumulada de $N$ etapas en cascada se calcula en escala lineal ($f = 10^{NF/10}$, $g = 10^{G/10}$):
+        $$f_{\text{acum}} = f_1 + \frac{f_2 - 1}{g_1} + \frac{f_3 - 1}{g_1 \cdot g_2} + \dots + \frac{f_N - 1}{\prod_{k=1}^{N-1} g_k}$$
+        $$NF_{\text{acum (dB)}} = 10 \log_{10}(f_{\text{acum}})$$
+
+        *Nota en Pasivos:* Para componentes disipativas a $T_0 = 290\text{ K}$, $f_i = 1/g_i \implies NF_{i\text{ (dB)}} = -G_{i\text{ (dB)}} = |G_{i\text{ (dB)}}|$.
+
+        #### 2. Parámetros de Linealidad Referidos a la Entrada (IP1dB, IIP3, IIP2)
+        Cada componente $i$ con ganancia $G_i$ y parámetros de salida $OP_{1\text{dB},i}$, $OIP_{3,i}$, $OIP_{2,i}$ tiene equivalentes de entrada:
+        $$IP_{1\text{dB}, i} = OP_{1\text{dB}, i} - G_i, \quad IIP_{3, i} = OIP_{3, i} - G_i, \quad IIP_{2, i} = OIP_{2, i} - G_i$$
+
+        La degradación en cascada de los puntos de intercepción se evalúa sumando las potencias de intermodulación:
+        $$\frac{1}{iip_{3,\text{acum (mW)}}} = \sum_{i=1}^N \frac{g_{\text{acum, prev}, i}}{iip_{3, i (\text{mW})}}$$
+        $$\frac{1}{iip_{2,\text{acum (mW)}}} = \sum_{i=1}^N \frac{g_{\text{acum, prev}, i}^2}{iip_{2, i (\text{mW})}}$$
+        $$OIP_{3,\text{acum}} = IIP_{3,\text{acum}} + G_{\text{total}}, \quad OIP_{2,\text{acum}} = IIP_{2,\text{acum}} + G_{\text{total}}$$
+
+        #### 3. Sensibilidad del Receptor
+        * **MDS (Minimum Detectable Signal) en Canal RF Superheterodino:**
+          $$MDS_{\text{dBm}} = (k T_0)_{\text{dBm/MHz}} + 10 \log_{10}(B_{\text{RF (MHz)}}) + NF_{\text{acum (dB)}} + SNR_{\text{min (dB)}}$$
+
+        * **TSS (Tangential Signal Sensitivity) a la salida de Detector / DLVA (Fórmula Tsui / Lucas):**
+          $$TSS_{\text{dBm}} = (k T_0)_{\text{dBm/MHz}} + NF_{\text{acum (dB)}} + 10 \log_{10} \left( 2.5 \cdot B_v + 4 \sqrt{2 B_{\text{RF}} B_v - B_v^2} \right)$$
+          *(con $B_{\text{RF}}$ y $B_v$ en MHz).*
+
+        #### 4. Rangos Dinámicos
+        * **SFDR (Spurious-Free Dynamic Range):**
+          $$SFDR_{\text{dB}} = \frac{2}{3} \left( IIP_{3,\text{acum (dBm)}} - P_{\text{noise, in (dBm)}} \right)$$
+        * **IDR (Intermodulation Free / 1dB Dynamic Range):**
+          $$IDR_{\text{dB}} = IP_{1\text{dB, acum (dBm)}} - MDS_{\text{dBm}}$$
+        """)
+
 
 if __name__ == "__main__":
-    main()
+    main
